@@ -1,57 +1,131 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8">
-  <title>Face-api.js 模型測試</title>
+  <meta charset="UTF-8" />
+  <title>Face-api.js TinyFaceDetector 測試（含相機偵測）</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- face-api.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2"></script>
   <style>
-    body {
-      background: #0f1422;
-      color: #e9eef6;
-      font-family: system-ui, "Noto Sans TC", sans-serif;
-      text-align: center;
-      padding: 40px;
-    }
-    button {
-      padding: 12px 20px;
-      background: #2563eb;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 16px;
-    }
-    button:hover { background: #1e4fd1; }
-    #status { margin-top: 20px; font-size: 18px; }
+    body{margin:0;background:#0f1422;color:#e9eef6;font-family:system-ui,"Noto Sans TC",sans-serif}
+    .wrap{max-width:860px;margin:40px auto;padding:0 16px}
+    h1{margin:0 0 16px}
+    .card{background:#161b2a;border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:16px}
+    button{padding:10px 16px;border:0;border-radius:10px;background:#2563eb;color:#fff;cursor:pointer}
+    button.secondary{background:#1c2438}
+    code{background:#0e1320;border:1px solid rgba(255,255,255,.1);padding:2px 6px;border-radius:6px}
+    .ok{color:#7CFFB2}.bad{color:#ff6b6b}.muted{color:#93a0ad}
+    video,canvas{max-width:100%;border-radius:10px;background:#000;margin-top:12px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .mt{margin-top:12px}
   </style>
 </head>
 <body>
+<div class="wrap">
   <h1>Face-api.js TinyFaceDetector 測試</h1>
-  <p>請確認 <code>/models/</code> 資料夾內有：<br>
-    <code>tiny_face_detector_model-weights_manifest.json</code> <br>
-    <code>tiny_face_detector_model-shard1</code>
-  </p>
 
-  <button id="testBtn">測試模型載入</button>
-  <div id="status">尚未測試</div>
+  <div class="card">
+    <p>請確認你的專案根目錄有資料夾 <code>/models</code>，且包含：</p>
+    <ul>
+      <li><code>tiny_face_detector_model-weights_manifest.json</code></li>
+      <li><code>tiny_face_detector_model-shard1</code></li>
+    </ul>
 
-  <script>
-    document.getElementById("testBtn").addEventListener("click", async () => {
-      const status = document.getElementById("status");
-      status.textContent = "⏳ 模型載入中...";
+    <div class="row mt">
+      <button id="btnLoad">測試模型載入</button>
+      <button id="btnCam" class="secondary" disabled>啟動相機偵測（載入成功後可用）</button>
+    </div>
 
-      try {
-        await faceapi.nets.tinyFaceDetector.loadFromUri("./models");
-        if (faceapi.nets.tinyFaceDetector.isLoaded) {
-          status.textContent = "✅ TinyFaceDetector 模型載入成功！";
-        } else {
-          status.textContent = "⚠️ 模型載入不完整。";
-        }
-      } catch (e) {
-        console.error(e);
-        status.textContent = "❌ 模型載入失敗，請檢查路徑與檔案。";
-      }
-    });
-  </script>
+    <p class="mt">嘗試載入路徑（自動）：<code id="baseUrl">（尚未開始）</code></p>
+    <p id="status" class="muted">尚未測試</p>
+
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+</div>
+
+<script>
+const statusEl = document.getElementById('status');
+const baseEl   = document.getElementById('baseUrl');
+const btnLoad  = document.getElementById('btnLoad');
+const btnCam   = document.getElementById('btnCam');
+const video    = document.getElementById('video');
+const overlay  = document.getElementById('overlay');
+const octx     = overlay.getContext('2d');
+
+function setStatus(text, cls=''){ statusEl.className = cls || 'muted'; statusEl.textContent = text; }
+
+// 以「當前頁面」為基準組相對路徑（適用 GitHub Pages 子路徑）
+function modelsBase() {
+  // new URL('models/', location.href) 會得到 {目前頁面}/models/
+  const u = new URL('models/', location.href);
+  // 轉成相對於當前頁的路徑（更直觀顯示）
+  const rel = 'models';
+  baseEl.textContent = u.href + '  (顯示為相對：' + rel + ')';
+  return rel; // 直接回傳 'models' 讓 loadFromUri 使用
+}
+
+async function loadTinyModel() {
+  const base = modelsBase();
+  setStatus('⏳ 正在載入 TinyFaceDetector 模型…');
+  try {
+    await faceapi.nets.tinyFaceDetector.loadFromUri(base);
+    if (faceapi.nets.tinyFaceDetector.isLoaded) {
+      setStatus('✅ 模型載入成功！', 'ok');
+      btnCam.disabled = false;
+    } else {
+      setStatus('⚠️ 模型載入不完整（isLoaded = false）。', 'bad');
+    }
+  } catch (err) {
+    console.error(err);
+    setStatus('❌ 模型載入失敗，請檢查路徑與檔案是否在 /models。', 'bad');
+  }
+}
+
+btnLoad.addEventListener('click', loadTinyModel);
+
+// 相機偵測（成功載入後可用）
+btnCam.addEventListener('click', async () => {
+  if (!faceapi.nets.tinyFaceDetector.isLoaded) {
+    setStatus('請先成功載入模型再啟動相機。', 'bad');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+
+    overlay.width = video.videoWidth || 640;
+    overlay.height = video.videoHeight || 480;
+
+    setStatus('相機啟動中…如看不到畫面，請允許相機權限。');
+
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 });
+
+    async function loop(){
+      octx.clearRect(0,0,overlay.width, overlay.height);
+      // 畫出攝影機畫面到 overlay 當底（僅示意；也可以直接顯示 <video> 就好）
+      octx.drawImage(video, 0, 0, overlay.width, overlay.height);
+
+      const dets = await faceapi.detectAllFaces(overlay, options);
+      setStatus(`偵測到人臉：${dets.length} 張`, 'ok');
+
+      // 簡單畫框
+      octx.strokeStyle = '#7CFFB2';
+      octx.lineWidth = 2;
+      dets.forEach(d => {
+        const { x, y, width, height } = d.box;
+        octx.strokeRect(x, y, width, height);
+      });
+
+      requestAnimationFrame(loop);
+    }
+    loop();
+  } catch (e) {
+    console.error(e);
+    setStatus('❌ 相機啟動失敗，請檢查瀏覽器相機權限。', 'bad');
+  }
+});
+</script>
 </body>
 </html>
