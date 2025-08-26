@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>16:9 → 4:3 智慧裁切 → PDF（每頁 64×48 mm 一張）</title>
+
+<!-- TFJS / Models / jsPDF -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+<style>
+  body{margin:0;background:#0f1422;color:#e9eef6;font-family:system-ui,Segoe UI,Roboto,"Noto Sans TC"}
+  .wrap{max-width:820px;margin:28px auto;padding:0 16px}
+  .card{background:#161b2a;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:16px}
+  h1{font-size:22px;margin:0 0 12px}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}
+  label{font-size:13px;color:#93a0ad}
+  input[type="number"],select{padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:#0e1320;color:#e9eef6}
+  input[type="file"]{color:#e9eef6}
+  button{padding:10px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.2);background:#2563eb;color:#fff;cursor:pointer}
+  video,canvas{max-width:100%;background:#000;border-radius:10px}
+  .hint{font-size:12px;color:#93a0ad}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>16:9 → 4:3 智慧裁切 → PDF（每頁 64×48 mm）</h1>
+  <div class="card">
+    <div class="row">
+      <input type="file" id="videoFile" accept="video/*">
+      <label>← 上傳影片</label>
+    </div>
+    <div class="row">
+      <label>偵測模式</label>
+      <select id="mode">
+        <option value="face">人臉</option>
+        <option value="object">物件</option>
+        <option value="center">中心</option>
+      </select>
+      <label>抽取張數</label>
+      <input type="number" id="count" value="50" min="1" step="1">
+      <button id="run">輸出 PDF</button>
+    </div>
+    <div class="hint">
+      人臉模型需在網站根目錄放置 <code>/models/</code>（face-api.js 的 TinyFaceDetector 模型檔）。<br>
+      若模型載入失敗，會自動退回「中心」模式，流程不中斷。每頁 PDF 僅放一張影格，尺寸固定 64×48 mm。
+    </div>
+    <video id="vid" controls></video>
+    <canvas id="work" hidden></canvas>
+  </div>
+</div>
+
+<script>
+const vidEl   = document.getElementById('vid');
+const fileInp = document.getElementById('videoFile');
+const modeSel = document.getElementById('mode');
+const countEl = document.getElementById('count');
+const runBtn  = document.getElementById('run');
+const workCv  = document.getElementById('work');
+const wctx    = workCv.getContext('2d', { willReadFrequently: true });
+
+let cocoModel = null;
+let faceReady = false;
+
+// 載入模型（物件：COCO-SSD；人臉：TinyFaceDetector）
+(async () => {
+  try { cocoModel = await cocoSsd.load(); } catch(e){ console.warn('coco-ssd 載入失敗：', e); }
+  try {
+    await faceapi.nets.tinyFaceDetector.loadFromUri('/models'); // 需自行放置模型檔
+    faceReady = true;
+  } catch (e) {
+    console.warn('face-api 模型未載入，將無法使用人臉模式：', e);
+  }
+})();
+
+// 載入影片
+fileInp.addEventListener('change', e => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  vidEl.src = url;
+  vidEl.onloadedmetadata = () => { vidEl.currentTime = 0; };
+});
+
+// 均勻切 N 個時間點（含頭尾）
+function uniformTimes(duration, N){
+  if (N <= 1) return [Math.min(duration/2, Math.max(0, duration - 0.001))];
+  const arr = [];
+  for (let i=0;i<N;i++) arr.push(Math.min(i*duration/(N-1), Math.max(0, duration - 0.001)));
+  return arr;
+}
+
+// 取得當前幀畫布
+async function seekAndGrab(video, t){
+  if (video.paused) { try{ await video.play(); video.pause(); }catch{} }
+  await new Promise(res => { video.onseeked = ()=>res(); video.currentTime = t; });
+  const W = video.videoWidth || 1280;
+  const H = video.videoHeight || 720;
+  workCv.width = W; workCv.height = H;
+  wctx.drawImage(video, 0, 0, W, H);
+  return { W, H, canvas: workCv };
+}
+
+// 在單幀上找「主角中心點」(cx, cy)
+async function findSubjectCenter(mode, canvas){
+  const W = canvas.width, H = canvas.height;
+
+  if (mode === 'face' && faceReady){
+    try{
+      const det = await faceapi.detectAllFaces(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 }));
+      if (det && det.length){
+        // 取最大的臉
+        const best = det.map(d => d.box).sort((a,b)=>(b.width*b.height)-(a.width*a.height))[0];
+        return { cx: best.x + best.width/2, cy: best.y + best.height/2 };
+      }
+    }catch(e){ console.warn('人臉偵測失敗，fallback center：', e); }
+  }
+
+  if (mode === 'object' && cocoModel){
+    try{
+      const preds = await cocoModel.detect(canvas);
+      if (preds && preds.length){
+        // 優先 person；否則取面積最大者
+        let chosen = preds.filter(p => p.class === 'person')
+                          .sort((a,b)=>(b.bbox[2]*b.bbox[3])-(a.bbox[2]*a.bbox[3]))[0];
+        if (!chosen){
+          chosen = preds.sort((a,b)=>(b.bbox[2]*b.bbox[3])-(a.bbox[2]*a.bbox[3]))[0];
+        }
+        if (chosen){
+          const [x,y,w,h] = chosen.bbox;
+          return { cx: x + w/2, cy: y + h/2 };
+        }
+      }
+    }catch(e){ console.warn('物件偵測失敗，fallback center：', e); }
+  }
+
+  // fallback：畫面中心
+  return { cx: W/2, cy: H/2 };
+}
+
+// 以 4:3 裁框（盡量置中主角，避免越界）
+function computeCropBox(W, H, cx, cy){
+  const targetRatio = 4/3;
+  const cropW = Math.min(W, H * targetRatio);
+  const cropH = cropW / targetRatio;
+
+  let x0 = Math.round(cx - cropW/2);
+  let y0 = Math.round(cy - cropH/2);
+
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x0 + cropW > W) x0 = Math.round(W - cropW);
+  if (y0 + cropH > H) y0 = Math.round(H - cropH);
+
+  return { x0, y0, cropW: Math.round(cropW), cropH: Math.round(cropH) };
+}
+
+// 將裁切結果縮到 640×480，輸出 dataURL
+function cropToDataURL(canvas, x0, y0, cw, ch){
+  const out = document.createElement('canvas');
+  out.width = 640; out.height = 480; // 與 4:3 對應
+  const ctx = out.getContext('2d');
+  ctx.drawImage(canvas, x0, y0, cw, ch, 0, 0, out.width, out.height);
+  return out.toDataURL('image/jpeg', 0.9);
+}
+
+// 產出 PDF：每頁一張 64×48 mm，置於 (0,0)
+async function exportPDF(framesDataURL, baseName){
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ unit:'mm', format:'a4', orientation:'p' });
+
+  framesDataURL.forEach((url, i) => {
+    if (i > 0) pdf.addPage();
+    // x=0, y=0，寬=64mm，高=48mm（每頁只有這一張）
+    pdf.addImage(url, 'JPEG', 0, 0, 64, 48);
+  });
+
+  const fname = `Output_${baseName || 'video'}.pdf`;
+  try { pdf.save(fname); }
+  catch(e){
+    // Fallback: Blob 下載
+    const blob = pdf.output('blob');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  }
+}
+
+runBtn.addEventListener('click', async ()=>{
+  const file = fileInp.files?.[0];
+  if (!file){ alert('請先選擇影片'); return; }
+
+  const url = URL.createObjectURL(file);
+  vidEl.src = url;
+
+  await new Promise(res => { vidEl.onloadedmetadata = res; });
+  // 確保有畫面資料
+  if (vidEl.readyState < 2){
+    await new Promise(res => { vidEl.onloadeddata = res; });
+  }
+
+  const N = Math.max(1, parseInt(countEl.value || '50', 10));
+  let mode = modeSel.value;
+  if (mode === 'face' && !faceReady) {
+    alert('人臉模型未載入，改用「中心」模式');
+    mode = 'center';
+  }
+  if (mode === 'object' && !cocoModel) {
+    alert('物件模型未載入，改用「中心」模式');
+    mode = 'center';
+  }
+
+  const times = uniformTimes(vidEl.duration || 0, N);
+  const dataURLs = [];
+
+  for (let i=0; i<times.length; i++){
+    const { W, H, canvas } = await seekAndGrab(vidEl, times[i]);
+    const { cx, cy } = await findSubjectCenter(mode, canvas);
+    const { x0, y0, cropW, cropH } = computeCropBox(W, H, cx, cy);
+    const durl = cropToDataURL(canvas, x0, y0, cropW, cropH);
+    dataURLs.push(durl);
+  }
+
+  const base = (file.name || 'video').replace(/\.[^/.]+$/, '');
+  await exportPDF(dataURLs, base);
+  URL.revokeObjectURL(url);
+  alert('PDF 已輸出完成（每頁一張 64×48 mm）。');
+});
+</script>
+</body>
+</html>
