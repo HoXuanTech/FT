@@ -1,6 +1,57 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><title>Test</title></head>
-<body style="font-family:system-ui;padding:24px">
-<h1>Hello GitHub Pages 👋</h1>
-<p>如果你看到這行字，代表 Pages 已經正常運作。</p>
-</body></html>
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>Face-api.js 模型測試</title>
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2"></script>
+  <style>
+    body {
+      background: #0f1422;
+      color: #e9eef6;
+      font-family: system-ui, "Noto Sans TC", sans-serif;
+      text-align: center;
+      padding: 40px;
+    }
+    button {
+      padding: 12px 20px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    button:hover { background: #1e4fd1; }
+    #status { margin-top: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Face-api.js TinyFaceDetector 測試</h1>
+  <p>請確認 <code>/models/</code> 資料夾內有：<br>
+    <code>tiny_face_detector_model-weights_manifest.json</code> <br>
+    <code>tiny_face_detector_model-shard1</code>
+  </p>
+
+  <button id="testBtn">測試模型載入</button>
+  <div id="status">尚未測試</div>
+
+  <script>
+    document.getElementById("testBtn").addEventListener("click", async () => {
+      const status = document.getElementById("status");
+      status.textContent = "⏳ 模型載入中...";
+
+      try {
+        await faceapi.nets.tinyFaceDetector.loadFromUri("./models");
+        if (faceapi.nets.tinyFaceDetector.isLoaded) {
+          status.textContent = "✅ TinyFaceDetector 模型載入成功！";
+        } else {
+          status.textContent = "⚠️ 模型載入不完整。";
+        }
+      } catch (e) {
+        console.error(e);
+        status.textContent = "❌ 模型載入失敗，請檢查路徑與檔案。";
+      }
+    });
+  </script>
+</body>
+</html>
